@@ -41,11 +41,14 @@ GAME_CODE = "WinGo_1M"
 # ── CHANNEL / OWNER LINKS (appended to every message) ─────────────────────────
 CHANNEL_URL  = "https://t.me/danger_boy_op1"
 OWNER_URL    = "https://t.me/danger_boy_op"
-CHANNEL_NAME = "𒆜ﮩ٨ـﮩ٨ـ𝐉𝐎𝐈𝐍 𝐂𝐇𝐀𝐍𝐍𝐄𝐋ﮩ٨ـﮩ٨ـ𒆜"
-OWNER_NAME   = "𒆜ﮩ٨ـﮩ٨ـ𝐂𝐎𝐍𝐓𝐄𝐂𝐓 𝐎𝐖𝐍𝐄𝐑ﮩ٨ـﮩ٨ـ𒆜"
-JSON_URL  = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
-API_URL   = "https://api.ar-lottery01.com/api/Lottery/GetHistoryIssuePage"
-
+CHANNEL_NAME = "𒆙ﺋ٨ـﺋ٨ـ𝂛𝃞𝂌𝂝 𝂆𝂁𝂀𝂝𝂝𝂎𝂛ﺋ٨ـﺋ٨ـ𒆙"
+OWNER_NAME   = "𒆙ﺋ٨ـﺋ٨ـ𝂆𝃞𝂝𝄀𝂎𝂆𝄀 𝃞𝂖𝂝𝂎𝂑ﺋ٨ـﺋ٨ـ𒆙"
+# Static JSON URLs — require ?ts=<ms_timestamp> as cache-buster
+# These are served from Cloudflare/OSS, same origin as the game site
+HISTORY_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
+ROUND_URL   = "https://draw.ar-lottery01.com/WinGo/WinGo_1M.json"
+# Signed API endpoint — fallback when static URLs are blocked (e.g. some cloud IPs)
+API_URL     = "https://api.ar-lottery01.com/api/Lottery/GetHistoryIssuePage"
 HTTP_PORT = int(os.getenv("PORT", "8080"))   # set PORT in .env or env var if needed
 
 # ── IMAGE PATHS — always resolved next to this script file ────────────────────
@@ -206,29 +209,27 @@ def _sign(params: dict) -> str:
 
 def fetch_latest(n: int = 15) -> list:
     """
-    Fetch latest results.
-    Strategy:
-      1. Try the fast static JSON URL (no auth, works from local/most IPs)
-      2. If that returns 403/empty (blocked on Render), fall back to the
-         signed API endpoint with browser headers — works from any IP.
-    Retries 3 times total before giving up.
+    Fetch latest results using the static JSON URL with ?ts= cache-buster.
+    This matches exactly how the game website fetches data.
+    Falls back to the signed API endpoint if the static URL returns 403.
     """
-    for attempt in range(3):
-        # ── Try 1: fast static JSON (no auth needed, works on most servers) ──
-        try:
-            r = requests.get(JSON_URL, headers=_HEADERS, timeout=8)
-            if r.status_code == 200:
-                text = r.text.strip()
-                if text and text.startswith("{"):
-                    data = r.json()
-                    lst  = (data.get("data") or {}).get("list", [])
-                    if lst:
-                        log.debug(f"fetch_latest: JSON_URL OK ({len(lst)} records)")
-                        return lst[:n]
-        except Exception as e:
-            log.debug(f"fetch_latest JSON_URL attempt {attempt+1}: {e}")
+    ts = int(time.time() * 1000)   # millisecond timestamp = cache-buster
 
-        # ── Try 2: signed API endpoint (works even when JSON_URL is blocked) ──
+    # ── Try 1: fast static JSON (exact same request as the game website) ──────
+    try:
+        url = f"{HISTORY_URL}?ts={ts}"
+        r = requests.get(url, headers=_HEADERS, timeout=8)
+        if r.status_code == 200 and r.text.strip():
+            data = r.json()
+            lst  = (data.get("data") or {}).get("list", [])
+            if lst:
+                return lst[:n]
+        log.debug(f"fetch_latest static: status={r.status_code}")
+    except Exception as e:
+        log.debug(f"fetch_latest static: {e}")
+
+    # ── Try 2: signed API endpoint (works from cloud IPs) ────────────────────
+    for attempt in range(3):
         try:
             params = {
                 "gameCode": GAME_CODE,
@@ -243,22 +244,46 @@ def fetch_latest(n: int = 15) -> list:
             if API_TOKEN:
                 headers["Authorization"] = f"Bearer {API_TOKEN}"
             r = requests.get(API_URL, params=params, headers=headers, timeout=10)
-            if r.status_code == 200:
-                text = r.text.strip()
-                if text:
-                    data = r.json()
-                    lst  = (data.get("data") or {}).get("list", [])
-                    if lst:
-                        log.debug(f"fetch_latest: API_URL OK ({len(lst)} records)")
-                        return lst[:n]
+            if r.status_code == 200 and r.text.strip():
+                data = r.json()
+                lst  = (data.get("data") or {}).get("list", [])
+                if lst:
+                    return lst[:n]
             log.warning(f"fetch_latest API attempt {attempt+1}: HTTP {r.status_code}")
         except Exception as e:
             log.warning(f"fetch_latest API attempt {attempt+1}: {e}")
-
         time.sleep(1)
 
-    log.error("fetch_latest: all attempts failed — both URLs unreachable")
+    log.error("fetch_latest: all attempts failed")
     return []
+
+
+def fetch_round_info() -> dict:
+    """
+    Fetch current/next round timing from WinGo_1M.json.
+    Returns dict with keys: current_issue, current_end_ms, next_issue, next_start_ms
+    Returns empty dict on failure.
+    """
+    ts = int(time.time() * 1000)
+    try:
+        url = f"{ROUND_URL}?ts={ts}"
+        r = requests.get(url, headers=_HEADERS, timeout=6)
+        if r.status_code == 200 and r.text.strip():
+            d = r.json()
+            cur  = d.get("current", {})
+            nxt  = d.get("next", {})
+            prev = d.get("previous", {})
+            return {
+                "prev_issue":    prev.get("issueNumber", ""),
+                "current_issue": cur.get("issueNumber", ""),
+                "current_end":   cur.get("endTime", 0) / 1000,    # seconds
+                "next_issue":    nxt.get("issueNumber", ""),
+                "next_start":    nxt.get("startTime", 0) / 1000,  # seconds
+                "state":         d.get("state", 0),
+            }
+    except Exception as e:
+        log.debug(f"fetch_round_info: {e}")
+    return {}
 
 
 def fetch_history_api(pages: int = 50) -> list:
@@ -483,21 +508,23 @@ def stats_text() -> str:
 # ── JOBS ──────────────────────────────────────────────────────────────────────
 async def job_poll(ctx: ContextTypes.DEFAULT_TYPE):
     """
-    Polls every 5 seconds.
-    Detects the moment a new WinGo round starts (new issue number appears)
-    and immediately sends the prediction — so users get it within ~5s of
-    round start, giving them ~55s to place their bet before the round closes.
-    Also handles WIN/LOSE results for settled rounds.
+    Polls every 5 seconds. Uses WinGo_1M.json for exact round timing.
+    Detects new round -> sends prediction immediately.
+    Also checks WIN/LOSE for settled rounds.
     """
     global last_seen_issue
 
-    latest = fetch_latest(15)
+    round_info = fetch_round_info()
+    latest     = fetch_latest(15)
     if not latest:
         return
 
-    current_issue = latest[0]["issueNumber"]
+    if round_info:
+        current_issue = round_info["current_issue"]
+    else:
+        current_issue = latest[0]["issueNumber"]
 
-    # ── Check WIN/LOSE for any settled pending issues ─────────────────────────
+    # ── WIN/LOSE check for settled issues ────────────────────────────────────
     for uid in list(auto_set):
         done = []
         for issue, p in list(user_pending[uid].items()):
@@ -507,13 +534,14 @@ async def job_poll(ctx: ContextTypes.DEFAULT_TYPE):
             actual   = int(found["number"])
             won      = predictor.record(p["pred_bs"], actual, p["signal"])
             img_path = IMG_WIN if won else IMG_LOSE
+            label    = "✅ WIN" if won else "❌ LOSE"
             caption  = (
-                f"{'✅ WIN' if won else '❌ LOSE'}\n\n"
-                f"📋 Issue: `{issue}`\n"
-                f"🎯 Predicted: *{p['pred_bs']}*\n"
-                f"🎲 Actual: *{to_bs(actual)}* {actual} {col_emoji(actual)}\n\n"
-                f"📊 {predictor.stats['correct']}/{predictor.stats['total']} "
-                f"({predictor.acc:.0f}%)"
+                label + "\n\n"
+                "📋 Issue: `" + issue + "`\n"
+                "🎯 Predicted: *" + p["pred_bs"] + "*\n"
+                "🎲 Actual: *" + to_bs(actual) + "* " + str(actual) + " " + col_emoji(actual) + "\n\n"
+                "📊 " + str(predictor.stats["correct"]) + "/" + str(predictor.stats["total"]) +
+                " (" + f"{predictor.acc:.0f}" + "%)"
             )
             try:
                 await send_img(ctx.bot, uid, img_path, caption, reply_markup=kb_running())
@@ -523,17 +551,16 @@ async def job_poll(ctx: ContextTypes.DEFAULT_TYPE):
         for i in done:
             user_pending[uid].pop(i, None)
 
-    # ── New round detected? → send prediction immediately ────────────────────
+    # ── New round detected -> send prediction ─────────────────────────────────
     if current_issue == last_seen_issue:
-        return  # same round, nothing to predict yet
+        return
 
     last_seen_issue = current_issue
-    log.info(f"New issue detected: {current_issue} — sending predictions now")
+    log.info("New round: %s", current_issue)
 
     if not auto_set:
         return
 
-    # Reload history for accurate prediction
     nums = [int(x["number"]) for x in latest]
     ext  = fetch_history_api(50)
     predictor.load(ext if len(ext) >= 20 else nums)
@@ -542,39 +569,48 @@ async def job_poll(ctx: ContextTypes.DEFAULT_TYPE):
     pred = predictor.predict()
     nxt  = str(int(current_issue) + 1)
 
+    # Time remaining in current round
+    time_note = ""
+    if round_info and round_info.get("current_end"):
+        secs_left = int(round_info["current_end"] - time.time())
+        if secs_left > 0:
+            time_note = "⏱ " + str(secs_left) + "s to bet\n"
+
     sig            = pred["signal"]
     sig_e          = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}[sig]
     sk_len, sk_val = pred["streak"]
-    sk_info        = f"🔥 {sk_len}x {sk_val}" if sk_len >= 2 else "None"
+    sk_info        = "🔥 " + str(sk_len) + "x " + sk_val if sk_len >= 2 else "None"
 
     if pred["skip"]:
         img_path = IMG_SKIP
         caption  = (
-            f"⚠️ *SKIP*  `{nxt}`\n\n"
-            f"📊 `{cbar(pred['confidence'])}` {pred['confidence']:.0f}%\n"
-            f"🔴 No bet this round\n\n"
-            f"📈 Streak: {sk_info}\n"
-            f"_{datetime.now().strftime('%H:%M:%S')}_"
+            "⚠️ *SKIP*  `" + nxt + "`\n\n"
+            "📊 `" + cbar(pred["confidence"]) + "` " + f"{pred['confidence']:.0f}" + "%\n"
+            "🔴 No bet this round\n\n"
+            + time_note +
+            "📈 Streak: " + sk_info + "\n"
+            "_" + datetime.now().strftime("%H:%M:%S") + "_"
         )
     else:
         img_path = IMG_BIG if pred["bs"] == "BIG" else IMG_SMALL
         sugg     = "  ".join(str(x) for x in pred["suggested"])
         caption  = (
-            f"🎯 *{bs_e(pred['bs'])}*  `{nxt}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📌 *{pred['oe']}*\n"
-            f"🎰 Numbers: `{sugg}`\n\n"
-            f"📊 `{cbar(pred['confidence'])}` {pred['confidence']:.0f}%\n"
-            f"{sig_e} Signal: *{sig}*\n"
-            f"📈 Streak: {sk_info}\n\n"
-            f"_{datetime.now().strftime('%H:%M:%S')}_"
+            "🎯 *" + bs_e(pred["bs"]) + "*  `" + nxt + "`\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📌 *" + pred["oe"] + "*\n"
+            "🎰 Numbers: `" + sugg + "`\n\n"
+            "📊 `" + cbar(pred["confidence"]) + "` " + f"{pred['confidence']:.0f}" + "%\n"
+            + sig_e + " Signal: *" + sig + "*\n"
+            "📈 Streak: " + sk_info + "\n\n"
+            + time_note +
+            "_" + datetime.now().strftime("%H:%M:%S") + "_"
         )
 
     for uid in list(auto_set):
         if not is_approved(uid):
             auto_set.discard(uid)
             try:
-                await ctx.bot.send_message(uid, "⛔ Your access has expired.")
+                await ctx.bot.send_message(uid, "Your access has expired.")
             except Exception:
                 pass
             continue
@@ -583,7 +619,7 @@ async def job_poll(ctx: ContextTypes.DEFAULT_TYPE):
             if not pred["skip"]:
                 user_pending[uid][nxt] = {"pred_bs": pred["bs"], "signal": sig}
         except Exception as e:
-            log.error(f"job_poll send uid={uid}: {e}")
+            log.error("job_poll send uid=%s: %s", uid, e)
 
 
 async def job_expire(ctx: ContextTypes.DEFAULT_TYPE):
