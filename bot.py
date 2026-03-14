@@ -1,20 +1,17 @@
 """
-WinGo Auto Bet Bot v5.0
+WinGo Auto Bet Bot v6.0
 ========================
-- Auto-only: no /auto, no /predict — Start/Stop via inline buttons only
-- Images resolved relative to the script folder (fixes "Image missing" on Windows)
-- Markdown parse errors fixed (no raw @ usernames in parse_mode=Markdown)
-- Per-user pending dict — works correctly for many users simultaneously
-- Buttons are vertical: 🟢 Start / 🔴 Stop on separate rows
+- Single API: draw.ar-lottery01.com static JSON (no fallback, no signed API)
+- Auto-only: Start/Stop via inline buttons
+- Images resolved relative to the script folder
+- Per-user pending dict for concurrent users
+- Vertical buttons: 🟢 Start / 🔴 Stop on separate rows
 """
 
-import hashlib
 import http.server
 import json
 import logging
 import os
-import random
-import sys
 import threading
 import time
 from collections import Counter, defaultdict
@@ -30,28 +27,24 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "")
-API_TOKEN = os.getenv("API_TOKEN", "")
 
 if not BOT_TOKEN: raise RuntimeError("BOT_TOKEN missing in .env")
 if not MONGO_URI: raise RuntimeError("MONGO_URI missing in .env")
 
 ADMIN_IDS = {1793697840}
-GAME_CODE = "WinGo_1M"
 
-# ── CHANNEL / OWNER LINKS (appended to every message) ─────────────────────────
+# ── CHANNEL / OWNER LINKS ─────────────────────────────────────────────────────
 CHANNEL_URL  = "https://t.me/danger_boy_op1"
 OWNER_URL    = "https://t.me/danger_boy_op"
 CHANNEL_NAME = "𒆙ﺋ٨ـﺋ٨ـ𝂛𝃞𝂌𝂝 𝂆𝂁𝂀𝂝𝂝𝂎𝂛ﺋ٨ـﺋ٨ـ𒆙"
 OWNER_NAME   = "𒆙ﺋ٨ـﺋ٨ـ𝂆𝃞𝂝𝄀𝂎𝂆𝄀 𝃞𝂖𝂝𝂎𝂑ﺋ٨ـﺋ٨ـ𒆙"
-# Static JSON URLs — require ?ts=<ms_timestamp> as cache-buster
-# These are served from Cloudflare/OSS, same origin as the game site
-HISTORY_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
-ROUND_URL   = "https://draw.ar-lottery01.com/WinGo/WinGo_1M.json"
-# Signed API endpoint — fallback when static URLs are blocked (e.g. some cloud IPs)
-API_URL     = "https://api.ar-lottery01.com/api/Lottery/GetHistoryIssuePage"
-HTTP_PORT = int(os.getenv("PORT", "8080"))   # set PORT in .env or env var if needed
 
-# ── IMAGE PATHS — always resolved next to this script file ────────────────────
+# ── API ───────────────────────────────────────────────────────────────────────
+HISTORY_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
+
+HTTP_PORT = int(os.getenv("PORT", "8080"))
+
+# ── IMAGES ────────────────────────────────────────────────────────────────────
 _HERE     = os.path.dirname(os.path.abspath(__file__))
 IMG_BIG   = os.path.join(_HERE, "big.jpg")
 IMG_SMALL = os.path.join(_HERE, "small.jpg")
@@ -59,19 +52,15 @@ IMG_SKIP  = os.path.join(_HERE, "skip.jpg")
 IMG_WIN   = os.path.join(_HERE, "win.jpg")
 IMG_LOSE  = os.path.join(_HERE, "lose.jpg")
 
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Print image status at startup so you can verify paths immediately
+
 def _check_images():
-    for name, path in [("big",IMG_BIG),("small",IMG_SMALL),("skip",IMG_SKIP),
-                        ("win",IMG_WIN),("lose",IMG_LOSE)]:
+    for name, path in [("big", IMG_BIG), ("small", IMG_SMALL), ("skip", IMG_SKIP),
+                       ("win", IMG_WIN), ("lose", IMG_LOSE)]:
         status = "✅" if os.path.exists(path) else "❌ MISSING"
         print(f"  {name:6s}.jpg : {status}  ({path})")
-_check_images()
 
 
 # ── IMAGE SENDER ──────────────────────────────────────────────────────────────
@@ -84,23 +73,17 @@ def _open_img(path):
 
 
 async def send_img(bot, chat_id, img_path, caption, reply_markup=None):
-    """Send photo+caption; falls back to plain text if image missing."""
     photo = _open_img(img_path)
     try:
         if photo:
             await bot.send_photo(
-                chat_id=chat_id,
-                photo=photo,
-                caption=caption,
-                parse_mode="Markdown",
-                reply_markup=reply_markup,
+                chat_id=chat_id, photo=photo, caption=caption,
+                parse_mode="Markdown", reply_markup=reply_markup,
             )
         else:
             await bot.send_message(
-                chat_id=chat_id,
-                text=caption,
-                parse_mode="Markdown",
-                reply_markup=reply_markup,
+                chat_id=chat_id, text=caption,
+                parse_mode="Markdown", reply_markup=reply_markup,
             )
     finally:
         if photo:
@@ -134,12 +117,8 @@ def approve_user(uid: int, uname: str, days: int, admin_id: int):
     users.update_one(
         {"user_id": uid},
         {"$set": {
-            "user_id":     uid,
-            "username":    uname,
-            "expires_at":  exp,
-            "approved_by": admin_id,
-            "approved_at": datetime.now(timezone.utc),
-            "days":        days,
+            "user_id": uid, "username": uname, "expires_at": exp,
+            "approved_by": admin_id, "approved_at": datetime.now(timezone.utc), "days": days,
         }},
         upsert=True,
     )
@@ -171,21 +150,16 @@ def col_emoji(n: int) -> str:
     if n == 5: return "🟢🟣"
     return "🟢" if n in [1, 3, 7, 9] else "🔴"
 
-def to_bs(n: int) -> str: return "BIG"    if int(n) >= 5 else "SMALL"
-def to_oe(n: int) -> str: return "ODD"    if int(n) % 2  else "EVEN"
-def bs_e(bs: str) -> str: return "🔼 BIG" if bs == "BIG" else "🔽 SMALL"
+def to_bs(n: int) -> str: return "BIG"   if int(n) >= 5 else "SMALL"
+def to_oe(n: int) -> str: return "ODD"   if int(n) % 2  else "EVEN"
+def bs_e(bs: str)  -> str: return "🔼 BIG" if bs == "BIG" else "🔽 SMALL"
 
 def cbar(pct: float, w: int = 10) -> str:
     f = min(int(pct / (100 / w)), w)
     return "█" * f + "░" * (w - f)
 
-def safe_username(uname: str) -> str:
-    """Escape username for plain display — never use in Markdown with @."""
-    return uname.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
 
-
-# ── DATA FETCHERS ─────────────────────────────────────────────────────────────
-# Browser-like headers — required to avoid 403 on cloud/server IPs
+# ── DATA FETCHER (single source) ──────────────────────────────────────────────
 _HEADERS = {
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -197,126 +171,19 @@ _HEADERS = {
 }
 
 
-def _sign(params: dict) -> str:
-    """MD5 signature used by the WinGo API."""
-    f = {k: v for k, v in params.items()
-         if v is not None and v != ""
-         and k != "signature" and not isinstance(v, (dict, list))}
-    return hashlib.md5(
-        json.dumps(dict(sorted(f.items())), separators=(",", ":")).encode()
-    ).hexdigest().upper()[:32]
-
-
-def fetch_latest(n: int = 15) -> list:
-    """
-    Fetch latest results using the static JSON URL with ?ts= cache-buster.
-    This matches exactly how the game website fetches data.
-    Falls back to the signed API endpoint if the static URL returns 403.
-    """
-    ts = int(time.time() * 1000)   # millisecond timestamp = cache-buster
-
-    # ── Try 1: fast static JSON (exact same request as the game website) ──────
-    try:
-        url = f"{HISTORY_URL}?ts={ts}"
-        r = requests.get(url, headers=_HEADERS, timeout=8)
-        if r.status_code == 200 and r.text.strip():
-            data = r.json()
-            lst  = (data.get("data") or {}).get("list", [])
-            if lst:
-                return lst[:n]
-        log.debug(f"fetch_latest static: status={r.status_code}")
-    except Exception as e:
-        log.debug(f"fetch_latest static: {e}")
-
-    # ── Try 2: signed API endpoint (works from cloud IPs) ────────────────────
-    for attempt in range(3):
-        try:
-            params = {
-                "gameCode": GAME_CODE,
-                "language": "en",
-                "pageNo":   1,
-                "pageSize": max(n, 15),
-                "random":   random.randint(100000000000, 999999999999),
-            }
-            params["signature"] = _sign(params)
-            params["timestamp"] = int(time.time())
-            headers = dict(_HEADERS)
-            if API_TOKEN:
-                headers["Authorization"] = f"Bearer {API_TOKEN}"
-            r = requests.get(API_URL, params=params, headers=headers, timeout=10)
-            if r.status_code == 200 and r.text.strip():
-                data = r.json()
-                lst  = (data.get("data") or {}).get("list", [])
-                if lst:
-                    return lst[:n]
-            log.warning(f"fetch_latest API attempt {attempt+1}: HTTP {r.status_code}")
-        except Exception as e:
-            log.warning(f"fetch_latest API attempt {attempt+1}: {e}")
-        time.sleep(1)
-
-    log.error("fetch_latest: all attempts failed")
-    return []
-
-
-def fetch_round_info() -> dict:
-    """
-    Fetch current/next round timing from WinGo_1M.json.
-    Returns dict with keys: current_issue, current_end_ms, next_issue, next_start_ms
-    Returns empty dict on failure.
-    """
+def fetch_latest(n: int = 10) -> list:
+    """Fetch latest results from the static JSON URL with ?ts= cache-buster."""
     ts = int(time.time() * 1000)
     try:
-        url = f"{ROUND_URL}?ts={ts}"
-        r = requests.get(url, headers=_HEADERS, timeout=6)
+        r = requests.get(f"{HISTORY_URL}?ts={ts}", headers=_HEADERS, timeout=8)
         if r.status_code == 200 and r.text.strip():
-            d = r.json()
-            cur  = d.get("current", {})
-            nxt  = d.get("next", {})
-            prev = d.get("previous", {})
-            return {
-                "prev_issue":    prev.get("issueNumber", ""),
-                "current_issue": cur.get("issueNumber", ""),
-                "current_end":   cur.get("endTime", 0) / 1000,    # seconds
-                "next_issue":    nxt.get("issueNumber", ""),
-                "next_start":    nxt.get("startTime", 0) / 1000,  # seconds
-                "state":         d.get("state", 0),
-            }
+            lst = (r.json().get("data") or {}).get("list", [])
+            if lst:
+                return lst[:n]
+        log.warning(f"fetch_latest: HTTP {r.status_code}")
     except Exception as e:
-        log.debug(f"fetch_round_info: {e}")
-    return {}
-
-
-def fetch_history_api(pages: int = 50) -> list:
-    if not API_TOKEN:
-        return []
-
-    def zt(d):
-        i = 10 ** d
-        while True:
-            t = random.randint(0, i - 1)
-            if not (t < i // 10 and t != 0):
-                return t
-
-    nums = []
-    for page in range(1, pages + 1):
-        b = {"gameCode": GAME_CODE, "language": "en",
-             "pageNo": page, "pageSize": 10, "random": zt(12)}
-        b["signature"] = _sign(b)
-        b["timestamp"] = int(time.time())
-        try:
-            r = requests.get(API_URL, params=b,
-                headers={**_HEADERS, "Authorization": f"Bearer {API_TOKEN}"}, timeout=10)
-            d = r.json()
-            if d.get("code") == 0:
-                for item in d["data"]["list"]:
-                    nums.append(int(item["number"]))
-            else:
-                break
-        except Exception as e:
-            log.error(f"API p{page}: {e}")
-            break
-        time.sleep(0.1)
-    return nums
+        log.error(f"fetch_latest: {e}")
+    return []
 
 
 # ── PREDICTION ENGINE ─────────────────────────────────────────────────────────
@@ -326,8 +193,8 @@ class WinGoPredictor:
         self.bs_seq:     list = []
         self.last_issue: str  = ""
         self.stats = {"correct": 0, "total": 0,
-                      "high_c":  0, "high_t": 0,
-                      "med_c":   0, "med_t":  0}
+                      "high_c": 0,  "high_t": 0,
+                      "med_c":  0,  "med_t":  0}
 
     def load(self, nums: list):
         self.history = nums
@@ -339,7 +206,7 @@ class WinGoPredictor:
         v, c = self.bs_seq[-1], 1
         for x in reversed(self.bs_seq[:-1]):
             if x == v: c += 1
-            else:       break
+            else:      break
         return c, v
 
     def predict(self) -> dict:
@@ -349,7 +216,9 @@ class WinGoPredictor:
         if len(self.bs_seq) < 10:
             return default
 
-        seq = self.bs_seq; votes = Counter(); evidence = []
+        seq = self.bs_seq
+        votes: Counter = Counter()
+        evidence = []
 
         # L1: Recency last-5
         r5 = seq[-5:]; r5b = r5.count("BIG"); r5s = 5 - r5b
@@ -369,16 +238,16 @@ class WinGoPredictor:
             evidence.append(f"Streak3->rev({opp})")
 
         # L3: Markov depth-3
-        chains3 = defaultdict(Counter)
+        chains3: dict = defaultdict(Counter)
         for i in range(len(seq) - 3):
             chains3[tuple(seq[i:i+3])][seq[i+3]] += 1
         key3 = tuple(seq[-3:])
         if key3 in chains3:
             t3 = chains3[key3]; tot = sum(t3.values())
             if tot >= 5:
-                best3, cnt3 = t3.most_common(1)[0]; conf = cnt3 / tot
-                votes[best3] += conf * 1.2
-                evidence.append(f"Markov3:{best3}({conf*100:.0f}%,n={tot})")
+                best3, cnt3 = t3.most_common(1)[0]
+                votes[best3] += (cnt3 / tot) * 1.2
+                evidence.append(f"Markov3:{best3}({cnt3/tot*100:.0f}%,n={tot})")
 
         # L4: Drift correction last-30
         r30 = seq[-30:]; big30 = r30.count("BIG")
@@ -404,9 +273,13 @@ class WinGoPredictor:
         r50 = self.history[:50]
         pool.sort(key=lambda x: r50.count(x))
 
-        return {"bs": pred_bs, "oe": pred_oe, "confidence": round(confidence, 1),
-                "signal": signal, "skip": signal == "LOW",
-                "streak": (sk_len, sk_val), "evidence": evidence[:4], "suggested": pool[:3]}
+        return {
+            "bs": pred_bs, "oe": pred_oe,
+            "confidence": round(confidence, 1),
+            "signal": signal, "skip": signal == "LOW",
+            "streak": (sk_len, sk_val), "evidence": evidence[:4],
+            "suggested": pool[:3],
+        }
 
     def record(self, pred_bs: str, actual_n: int, signal: str) -> bool:
         actual_bs = to_bs(actual_n)
@@ -428,55 +301,34 @@ class WinGoPredictor:
 
 
 # ── STATE ─────────────────────────────────────────────────────────────────────
-predictor     = WinGoPredictor()
-auto_set: set = set()
-last_seen_issue: str = ""   # tracks last issue we already predicted for
-
-# Per-user pending: {uid: {issue: {pred_bs, signal}}}
-# Allows many users to run simultaneously without overwriting each other
-user_pending: dict = defaultdict(dict)
+predictor        = WinGoPredictor()
+auto_set: set    = set()
+last_seen_issue: str = ""
+user_pending: dict   = defaultdict(dict)   # {uid: {issue: {pred_bs, signal}}}
 
 
-async def refresh() -> bool:
-    latest = fetch_latest(10)
-    if not latest:
-        return False
-    nums = [int(x["number"]) for x in latest]
-    ext  = fetch_history_api(50)
-    predictor.load(ext if len(ext) >= 20 else nums)
-    predictor.last_issue = latest[0]["issueNumber"]
-    return True
-
-
-# ── INLINE KEYBOARDS (vertical layout) ───────────────────────────────────────
+# ── INLINE KEYBOARDS ──────────────────────────────────────────────────────────
 def _link_rows() -> list:
-    """Channel + Owner URL buttons — appended to every keyboard."""
     return [
         [InlineKeyboardButton(CHANNEL_NAME, url=CHANNEL_URL)],
         [InlineKeyboardButton(OWNER_NAME,   url=OWNER_URL)],
     ]
 
-
 def kb_running() -> InlineKeyboardMarkup:
-    """Prediction / result message — Stats + Stop + links."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Stats",     callback_data="stats")],
         [InlineKeyboardButton("🔴 Stop Auto", callback_data="stop_auto")],
         *_link_rows(),
     ])
 
-
 def kb_stopped() -> InlineKeyboardMarkup:
-    """Stopped state — Start + Stats + links."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Start Auto", callback_data="start_auto")],
         [InlineKeyboardButton("📊 Stats",      callback_data="stats")],
         *_link_rows(),
     ])
 
-
 def kb_start() -> InlineKeyboardMarkup:
-    """Welcome /start message — Start + Stats + links."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Start Auto", callback_data="start_auto")],
         [InlineKeyboardButton("📊 Stats",      callback_data="stats")],
@@ -499,50 +351,41 @@ def stats_text() -> str:
         f"📈 Total: {s['total']}",
         f"🎯 Overall: *{predictor.acc:.1f}%*",
     ]
-    if s["high_t"]:  lines.append(f"🟢 HIGH:   {s['high_c']}/{s['high_t']} = *{predictor.high_acc:.0f}%*")
-    if s["med_t"]:   lines.append(f"🟡 MEDIUM: {s['med_c']}/{s['med_t']} = *{predictor.med_acc:.0f}%*")
+    if s["high_t"]: lines.append(f"🟢 HIGH:   {s['high_c']}/{s['high_t']} = *{predictor.high_acc:.0f}%*")
+    if s["med_t"]:  lines.append(f"🟡 MEDIUM: {s['med_c']}/{s['med_t']} = *{predictor.med_acc:.0f}%*")
     lines.append("\n_Expected: 51-54% on a true RNG_")
     return "\n".join(lines)
 
 
 # ── JOBS ──────────────────────────────────────────────────────────────────────
 async def job_poll(ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Polls every 5 seconds. Uses WinGo_1M.json for exact round timing.
-    Detects new round -> sends prediction immediately.
-    Also checks WIN/LOSE for settled rounds.
-    """
     global last_seen_issue
 
-    round_info = fetch_round_info()
-    latest     = fetch_latest(15)
+    latest = fetch_latest(10)
     if not latest:
         return
 
-    if round_info:
-        current_issue = round_info["current_issue"]
-    else:
-        current_issue = latest[0]["issueNumber"]
+    current_issue = latest[0]["issueNumber"]
 
-    # ── WIN/LOSE check for settled issues ────────────────────────────────────
+    # ── WIN/LOSE check for settled issues ─────────────────────────────────────
     for uid in list(auto_set):
         done = []
         for issue, p in list(user_pending[uid].items()):
             found = next((x for x in latest if x["issueNumber"] == issue), None)
             if not found:
                 continue
-            actual   = int(found["number"])
-            won      = predictor.record(p["pred_bs"], actual, p["signal"])
-            img_path = IMG_WIN if won else IMG_LOSE
-            label    = "✅ WIN" if won else "❌ LOSE"
-            caption  = (
-                label + "\n\n"
-                "📋 Issue: `" + issue + "`\n"
-                "🎯 Predicted: *" + p["pred_bs"] + "*\n"
-                "🎲 Actual: *" + to_bs(actual) + "* " + str(actual) + " " + col_emoji(actual) + "\n\n"
-                "📊 " + str(predictor.stats["correct"]) + "/" + str(predictor.stats["total"]) +
-                " (" + f"{predictor.acc:.0f}" + "%)"
+            actual = int(found["number"])
+            won    = predictor.record(p["pred_bs"], actual, p["signal"])
+            label  = "✅ WIN" if won else "❌ LOSE"
+            caption = (
+                f"{label}\n\n"
+                f"📋 Issue: `{issue}`\n"
+                f"🎯 Predicted: *{p['pred_bs']}*\n"
+                f"🎲 Actual: *{to_bs(actual)}* {actual} {col_emoji(actual)}\n\n"
+                f"📊 {predictor.stats['correct']}/{predictor.stats['total']} "
+                f"({predictor.acc:.0f}%)"
             )
+            img_path = IMG_WIN if won else IMG_LOSE
             try:
                 await send_img(ctx.bot, uid, img_path, caption, reply_markup=kb_running())
             except Exception as e:
@@ -551,7 +394,7 @@ async def job_poll(ctx: ContextTypes.DEFAULT_TYPE):
         for i in done:
             user_pending[uid].pop(i, None)
 
-    # ── New round detected -> send prediction ─────────────────────────────────
+    # ── New round -> send prediction ──────────────────────────────────────────
     if current_issue == last_seen_issue:
         return
 
@@ -562,48 +405,37 @@ async def job_poll(ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     nums = [int(x["number"]) for x in latest]
-    ext  = fetch_history_api(50)
-    predictor.load(ext if len(ext) >= 20 else nums)
+    predictor.load(nums)
     predictor.last_issue = current_issue
 
-    pred = predictor.predict()
-    nxt  = str(int(current_issue) + 1)
-
-    # Time remaining in current round
-    time_note = ""
-    if round_info and round_info.get("current_end"):
-        secs_left = int(round_info["current_end"] - time.time())
-        if secs_left > 0:
-            time_note = "⏱ " + str(secs_left) + "s to bet\n"
-
+    pred           = predictor.predict()
+    nxt            = str(int(current_issue) + 1)
     sig            = pred["signal"]
     sig_e          = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}[sig]
     sk_len, sk_val = pred["streak"]
-    sk_info        = "🔥 " + str(sk_len) + "x " + sk_val if sk_len >= 2 else "None"
+    sk_info        = f"🔥 {sk_len}x {sk_val}" if sk_len >= 2 else "None"
 
     if pred["skip"]:
         img_path = IMG_SKIP
         caption  = (
-            "⚠️ *SKIP*  `" + nxt + "`\n\n"
-            "📊 `" + cbar(pred["confidence"]) + "` " + f"{pred['confidence']:.0f}" + "%\n"
-            "🔴 No bet this round\n\n"
-            + time_note +
-            "📈 Streak: " + sk_info + "\n"
-            "_" + datetime.now().strftime("%H:%M:%S") + "_"
+            f"⚠️ *SKIP*  `{nxt}`\n\n"
+            f"📊 `{cbar(pred['confidence'])}` {pred['confidence']:.0f}%\n"
+            f"🔴 No bet this round\n\n"
+            f"📈 Streak: {sk_info}\n"
+            f"_{datetime.now().strftime('%H:%M:%S')}_"
         )
     else:
         img_path = IMG_BIG if pred["bs"] == "BIG" else IMG_SMALL
         sugg     = "  ".join(str(x) for x in pred["suggested"])
         caption  = (
-            "🎯 *" + bs_e(pred["bs"]) + "*  `" + nxt + "`\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📌 *" + pred["oe"] + "*\n"
-            "🎰 Numbers: `" + sugg + "`\n\n"
-            "📊 `" + cbar(pred["confidence"]) + "` " + f"{pred['confidence']:.0f}" + "%\n"
-            + sig_e + " Signal: *" + sig + "*\n"
-            "📈 Streak: " + sk_info + "\n\n"
-            + time_note +
-            "_" + datetime.now().strftime("%H:%M:%S") + "_"
+            f"🎯 *{bs_e(pred['bs'])}*  `{nxt}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📌 *{pred['oe']}*\n"
+            f"🎰 Numbers: `{sugg}`\n\n"
+            f"📊 `{cbar(pred['confidence'])}` {pred['confidence']:.0f}%\n"
+            f"{sig_e} Signal: *{sig}*\n"
+            f"📈 Streak: {sk_info}\n\n"
+            f"_{datetime.now().strftime('%H:%M:%S')}_"
         )
 
     for uid in list(auto_set):
@@ -634,7 +466,7 @@ async def job_expire(ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await ctx.bot.send_message(
                 uid,
-                "⛔ *Access Expired*\n\nYour access has expired.\nContact admin to renew.",
+                "⛔ *Access Expired*\n\nContact admin to renew.",
                 parse_mode="Markdown",
             )
         except Exception:
@@ -649,12 +481,11 @@ def req_approved(fn):
         if not is_approved(uid):
             doc = users.find_one({"user_id": uid})
             msg = ("⛔ Access expired. Contact admin to renew."
-                   if doc else "⛔ Not approved. Contact admin to get access.")
+                   if doc else "⛔ Not approved. Contact admin.")
             await update.message.reply_text(msg)
             return
         return await fn(update, ctx)
     return w
-
 
 def req_admin(fn):
     async def w(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -679,6 +510,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         exp_line = "⛔ Not approved — contact admin"
 
     status = "🟢 Running" if uid in auto_set else "🔴 Stopped"
+    kb     = kb_running() if uid in auto_set else kb_start()
 
     await update.message.reply_text(
         f"👋 *{name}*\n\n"
@@ -686,9 +518,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{'━'*26}\n"
         f"{exp_line}\n"
         f"Auto: {status}\n\n"
-        f"Press *Start Auto* to begin receiving predictions every 60 seconds.",
+        f"Press *Start Auto* to begin.",
         parse_mode="Markdown",
-        reply_markup=kb_start() if uid not in auto_set else kb_running(),
+        reply_markup=kb,
     )
 
 
@@ -696,7 +528,7 @@ async def cmd_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user_part = (
         "👤 *User Commands*\n"
-        "/start — Welcome screen with Start button\n"
+        "/start — Welcome screen\n"
         "/history — Last 10 results\n"
         "/stats — Win rate this session\n"
         "/info — Algorithm info\n"
@@ -725,7 +557,7 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = ["📋 *Last 10 Results*\n"]
     for item in latest:
         n = int(item["number"])
-        lines.append(f"`{item["issueNumber"]}` → *{n}* {col_emoji(n)}  {to_bs(n)} · {to_oe(n)}")
+        lines.append(f"`{item['issueNumber']}` → *{n}* {col_emoji(n)}  {to_bs(n)} · {to_oe(n)}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -736,17 +568,18 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *Algorithm: Recency Ensemble v5*\n\n"
-        "Backtested on 999 real WinGo rounds:\n"
-        "• Markov depth-7: 64% in-sample → 49% real (overfitting)\n"
-        "• Recency last-5: 53% real edge\n"
-        "• Streak 4+: 63% continuation\n\n"
+        "🤖 *Algorithm: Recency Ensemble v6*\n\n"
+        "Layers:\n"
+        "• Recency last-5: momentum bias\n"
+        "• Streak 4+: continuation | Streak 3: reversal\n"
+        "• Markov depth-3: pattern matching (n≥5)\n"
+        "• Drift correction last-30: mean reversion\n\n"
         "Signal guide:\n"
-        "🟢 HIGH above 65% — bet\n"
-        "🟡 MEDIUM 55-65% — bet small\n"
-        "🔴 SKIP below 55% — no bet\n\n"
-        "Expected accuracy: 51-54%\n"
-        "Never risk more than you can afford to lose.",
+        "🟢 HIGH ≥65% — bet\n"
+        "🟡 MEDIUM 55–65% — bet small\n"
+        "🔴 SKIP <55% — no bet this round\n\n"
+        "Expected accuracy: 51–54%\n"
+        "_Never risk more than you can afford to lose._",
         parse_mode="Markdown",
     )
 
@@ -779,10 +612,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args
     if len(args) < 2:
-        await update.message.reply_text(
-            "Usage: /approve <user_id> <days> [username]\n"
-            "Example: /approve 123456789 30 john"
-        )
+        await update.message.reply_text("Usage: /approve <user_id> <days> [username]")
         return
     try:
         uid  = int(args[0])
@@ -790,7 +620,7 @@ async def cmd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("user_id and days must be numbers.")
         return
-    if days <= 0 or days > 3650:
+    if not (1 <= days <= 3650):
         await update.message.reply_text("Days must be 1 to 3650.")
         return
 
@@ -798,28 +628,16 @@ async def cmd_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     exp   = approve_user(uid, uname, days, update.effective_user.id)
     exp_s = exp.strftime("%Y-%m-%d %H:%M UTC")
 
-    # No Markdown here — avoids parse errors with special chars in usernames
     await update.message.reply_text(
-        f"Approved!\n\n"
-        f"User ID: {uid}\n"
-        f"Username: {uname}\n"
-        f"Duration: {days} days\n"
-        f"Expires: {exp_s}"
+        f"Approved!\n\nUser ID: {uid}\nUsername: {uname}\nDuration: {days} days\nExpires: {exp_s}"
     )
     try:
         await ctx.bot.send_message(
             uid,
-            f"Access Approved!\n\n"
-            f"Duration: {days} days\n"
-            f"Expires: {exp_s}\n\n"
-            f"Press /start to begin.",
+            f"Access Approved!\n\nDuration: {days} days\nExpires: {exp_s}\n\nPress /start to begin."
         )
     except Exception as e:
         log.warning(f"Could not notify {uid}: {e}")
-        await update.message.reply_text(
-            f"Approved but could not notify user {uid}. "
-            f"They may not have started the bot yet."
-        )
 
 
 @req_admin
@@ -857,9 +675,7 @@ async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)
         running = "🟢" if doc["user_id"] in auto_set else "⚫"
-        lines.append(
-            f"{running} {doc['user_id']} ({doc.get('username','?')}) — {days_left(exp)}"
-        )
+        lines.append(f"{running} {doc['user_id']} ({doc.get('username','?')}) — {days_left(exp)}")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -901,30 +717,28 @@ async def cmd_addadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_resetstats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     predictor.stats = {"correct": 0, "total": 0,
                        "high_c": 0, "high_t": 0,
-                       "med_c": 0, "med_t": 0}
+                       "med_c": 0,  "med_t": 0}
     await update.message.reply_text("Session stats reset.")
 
 
 # ── CALLBACK HANDLER ──────────────────────────────────────────────────────────
 async def on_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q       = update.callback_query
+    q    = update.callback_query
     await q.answer()
-    uid     = q.from_user.id
-    mo      = q.message
-    data    = q.data
+    uid  = q.from_user.id
+    data = q.data
 
     if data == "stats":
-        await mo.reply_text(stats_text(), parse_mode="Markdown")
+        await q.message.reply_text(stats_text(), parse_mode="Markdown")
 
     elif data == "start_auto":
         if not is_approved(uid):
-            await mo.reply_text("Not approved. Contact admin.")
+            await q.message.reply_text("Not approved. Contact admin.")
             return
         auto_set.add(uid)
-        await mo.reply_text(
+        await q.message.reply_text(
             "🟢 *Auto Betting ON*\n\n"
-            "You will receive a prediction every 60 seconds automatically.\n\n"
-            "Signal guide:\n"
+            "You will receive predictions automatically.\n\n"
             "🟢 HIGH — bet\n"
             "🟡 MEDIUM — bet small\n"
             "🔴 SKIP — no bet this round",
@@ -934,36 +748,28 @@ async def on_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "stop_auto":
         auto_set.discard(uid)
-        await mo.reply_text(
+        await q.message.reply_text(
             "🔴 *Auto Betting STOPPED*\n\nPress Start Auto to resume.",
             parse_mode="Markdown",
             reply_markup=kb_stopped(),
         )
 
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
-
-# ── HEALTH-CHECK HTTP SERVER ──────────────────────────────────────────────────
+# ── HEALTH-CHECK SERVER ───────────────────────────────────────────────────────
 _bot_start_time = datetime.now(timezone.utc)
 
 
 class _HealthHandler(http.server.BaseHTTPRequestHandler):
-    """Tiny HTTP server — responds 200 on GET/HEAD / so render/railway/koyeb
-    uptime monitors know the bot process is alive."""
-
-    def do_GET(self):
-        self._respond()
-
-    def do_HEAD(self):
-        self._respond(body=False)
+    def do_GET(self):  self._respond()
+    def do_HEAD(self): self._respond(body=False)
 
     def _respond(self, body=True):
-        uptime  = datetime.now(timezone.utc) - _bot_start_time
-        hours, rem  = divmod(int(uptime.total_seconds()), 3600)
-        minutes, secs = divmod(rem, 60)
-        payload = (
-            f"✅ Bot is running\n"
-            f"Uptime : {hours}h {minutes}m {secs}s\n"
+        uptime        = datetime.now(timezone.utc) - _bot_start_time
+        h, rem        = divmod(int(uptime.total_seconds()), 3600)
+        m, s          = divmod(rem, 60)
+        payload       = (
+            f"✅ Bot running\n"
+            f"Uptime : {h}h {m}m {s}s\n"
             f"Users  : {len(auto_set)} active\n"
             f"Since  : {_bot_start_time.strftime('%Y-%m-%d %H:%M UTC')}"
         ).encode()
@@ -974,30 +780,27 @@ class _HealthHandler(http.server.BaseHTTPRequestHandler):
         if body:
             self.wfile.write(payload)
 
-    def log_message(self, fmt, *args):
-        pass   # silence default access logs
+    def log_message(self, *_): pass
 
 
 def _start_health_server():
-    server = http.server.HTTPServer(("0.0.0.0", HTTP_PORT), _HealthHandler)
-    log.info(f"Health server listening on port {HTTP_PORT}")
-    server.serve_forever()
+    http.server.HTTPServer(("0.0.0.0", HTTP_PORT), _HealthHandler).serve_forever()
 
 
+# ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 44)
-    print("   WinGo Auto Bet Bot  v5.0")
+    print("   WinGo Auto Bet Bot  v6.0")
     print("=" * 44)
     print(f"  BOT_TOKEN : {'OK' if BOT_TOKEN else 'MISSING'}")
     print(f"  MONGO_URI : {'OK' if MONGO_URI else 'MISSING'}")
-    print(f"  API_TOKEN : {'OK (500-rec)' if API_TOKEN else 'none (10-rec)'}")
     print("  Images:")
     _check_images()
     print("=" * 44)
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    for cmd_name, fn in [
+    for name, fn in [
         ("start",      cmd_start),
         ("cmd",        cmd_cmd),
         ("history",    cmd_history),
@@ -1011,19 +814,17 @@ def main():
         ("addadmin",   cmd_addadmin),
         ("resetstats", cmd_resetstats),
     ]:
-        app.add_handler(CommandHandler(cmd_name, fn))
+        app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(on_cb))
 
     jq = app.job_queue
-    jq.run_repeating(job_poll,   interval=5,    first=3)   # fires within 5s of each new round
+    jq.run_repeating(job_poll,   interval=5,    first=3)
     jq.run_repeating(job_expire, interval=3600, first=120)
 
-    # Start health-check HTTP server in background thread
-    t = threading.Thread(target=_start_health_server, daemon=True)
-    t.start()
-    print(f"  Health : http://0.0.0.0:{HTTP_PORT}/")
+    threading.Thread(target=_start_health_server, daemon=True).start()
+    print(f"  Health : http://0.0.0.0:{HTTP_PORT}/\n")
+    print("Bot running. Ctrl+C to stop.\n")
 
-    print("\nBot running. Ctrl+C to stop.\n")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
