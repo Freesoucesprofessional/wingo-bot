@@ -45,6 +45,7 @@ CHANNEL_NAME = "𒆜ﮩ٨ـﮩ٨ـ𝐉𝐎𝐈𝐍 𝐂𝐇𝐀𝐍𝐍𝐄𝐋�
 OWNER_NAME   = "𒆜ﮩ٨ـﮩ٨ـ𝐂𝐎𝐍𝐓𝐄𝐂𝐓 𝐎𝐖𝐍𝐄𝐑ﮩ٨ـﮩ٨ـ𒆜"
 JSON_URL  = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
 API_URL   = "https://api.ar-lottery01.com/api/Lottery/GetHistoryIssuePage"
+
 HTTP_PORT = int(os.getenv("PORT", "8080"))   # set PORT in .env or env var if needed
 
 # ── IMAGE PATHS — always resolved next to this script file ────────────────────
@@ -181,7 +182,7 @@ def safe_username(uname: str) -> str:
 
 
 # ── DATA FETCHERS ─────────────────────────────────────────────────────────────
-# Browser-like headers so the API doesn't block server/cloud IPs
+# Browser-like headers — required to avoid 403 on cloud/server IPs
 _HEADERS = {
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -192,33 +193,64 @@ _HEADERS = {
     "Origin":          "https://bdgah.com",
 }
 
-# Fallback API endpoint (same data, different host)
-JSON_URL2 = "https://api.ar-lottery01.com/api/Lottery/GetHistoryIssuePage"
+
+def _sign(params: dict) -> str:
+    """MD5 signature used by the WinGo API."""
+    f = {k: v for k, v in params.items()
+         if v is not None and v != ""
+         and k != "signature" and not isinstance(v, (dict, list))}
+    return hashlib.md5(
+        json.dumps(dict(sorted(f.items())), separators=(",", ":")).encode()
+    ).hexdigest().upper()[:32]
 
 
-def fetch_latest(n: int = 10) -> list:
-    """Fetch latest results with retry + fallback URL + browser headers."""
+def fetch_latest(n: int = 15) -> list:
+    """
+    Fetch latest results from the API endpoint with browser headers.
+    The static JSON_URL returns 403 on cloud IPs — we use the signed
+    API endpoint instead (same data, works from any IP with correct headers).
+    Retries 3 times before giving up.
+    """
     for attempt in range(3):
-        for url in [JSON_URL, JSON_URL2]:
-            try:
-                r = requests.get(url, headers=_HEADERS, timeout=10)
-                if r.status_code != 200:
-                    log.warning(f"fetch_latest {url} returned {r.status_code}")
-                    continue
-                text = r.text.strip()
-                if not text:
-                    log.warning(f"fetch_latest {url} empty response")
-                    continue
-                data = r.json()
-                # JSON_URL returns {"data":{"list":[...]}}
-                # API fallback returns {"code":0,"data":{"list":[...]}}
-                lst = (data.get("data") or {}).get("list", [])
-                if lst:
-                    return lst[:n]
-            except Exception as e:
-                log.warning(f"fetch_latest attempt {attempt+1} {url}: {e}")
+        try:
+            params = {
+                "gameCode": GAME_CODE,
+                "language": "en",
+                "pageNo":   1,
+                "pageSize": max(n, 15),
+                "random":   random.randint(100000000000, 999999999999),
+            }
+            params["signature"] = _sign(params)
+            params["timestamp"] = int(time.time())
+
+            headers = dict(_HEADERS)
+            if API_TOKEN:
+                headers["Authorization"] = f"Bearer {API_TOKEN}"
+
+            r = requests.get(API_URL, params=params, headers=headers, timeout=10)
+
+            if r.status_code != 200:
+                log.warning(f"fetch_latest attempt {attempt+1}: HTTP {r.status_code}")
+                time.sleep(1)
+                continue
+
+            text = r.text.strip()
+            if not text:
+                log.warning(f"fetch_latest attempt {attempt+1}: empty response")
+                time.sleep(1)
+                continue
+
+            data = r.json()
+            lst  = (data.get("data") or {}).get("list", [])
+            if lst:
+                return lst[:n]
+
+            log.warning(f"fetch_latest attempt {attempt+1}: empty list, code={data.get('code')}")
+        except Exception as e:
+            log.warning(f"fetch_latest attempt {attempt+1}: {e}")
         time.sleep(1)
-    log.error("fetch_latest: all attempts failed")
+
+    log.error("fetch_latest: all 3 attempts failed")
     return []
 
 
@@ -233,19 +265,11 @@ def fetch_history_api(pages: int = 50) -> list:
             if not (t < i // 10 and t != 0):
                 return t
 
-    def sign(p):
-        f = {k: v for k, v in p.items()
-             if v is not None and v != ""
-             and k != "signature" and not isinstance(v, (dict, list))}
-        return hashlib.md5(
-            json.dumps(dict(sorted(f.items())), separators=(",", ":")).encode()
-        ).hexdigest().upper()[:32]
-
     nums = []
     for page in range(1, pages + 1):
         b = {"gameCode": GAME_CODE, "language": "en",
              "pageNo": page, "pageSize": 10, "random": zt(12)}
-        b["signature"] = sign(b)
+        b["signature"] = _sign(b)
         b["timestamp"] = int(time.time())
         try:
             r = requests.get(API_URL, params=b,
@@ -957,7 +981,7 @@ def main():
     print(f"  Health : http://0.0.0.0:{HTTP_PORT}/")
 
     print("\nBot running. Ctrl+C to stop.\n")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
