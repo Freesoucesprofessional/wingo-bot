@@ -36,8 +36,9 @@ ADMIN_IDS = {1793697840}
 # ── CHANNEL / OWNER LINKS ─────────────────────────────────────────────────────
 CHANNEL_URL  = "https://t.me/danger_boy_op1"
 OWNER_URL    = "https://t.me/danger_boy_op"
-CHANNEL_NAME = "𒆜ﮩ٨ـﮩ٨ـ𝐉𝐎𝐈𝐍 𝐂𝐇𝐀𝐍𝐍𝐄𝐋ﮩ٨ـﮩ٨ـ𒆜"
-OWNER_NAME   = "𒆜ﮩ٨ـﮩ٨ـ𝐂𝐎𝐍𝐓𝐄𝐂𝐓 𝐎𝐖𝐍𝐄𝐑ﮩ٨ـﮩ٨ـ𒆜"
+CHANNEL_NAME = "𒆙ﺋ٨ـﺋ٨ـ𝂛𝃞𝂌𝂝 𝂆𝂁𝂀𝂝𝂝𝂎𝂛ﺋ٨ـﺋ٨ـ𒆙"
+OWNER_NAME   = "𒆙ﺋ٨ـﺋ٨ـ𝂆𝃞𝂝𝄀𝂎𝂆𝄀 𝃞𝂖𝂝𝂎𝂑ﺋ٨ـﺋ٨ـ𒆙"
+
 # ── API ───────────────────────────────────────────────────────────────────────
 HISTORY_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
 # Cloudflare Worker URL — set via env var WORKER_URL
@@ -179,13 +180,15 @@ def fetch_latest(n: int = 10) -> list:
     Worker bypasses server IP blocks since Cloudflare IPs are never blocked.
     """
     url = WORKER_URL if WORKER_URL else f"{HISTORY_URL}?ts={int(time.time() * 1000)}"
+    log.info(f"fetch_latest: using {'WORKER' if WORKER_URL else 'DIRECT'} -> {url[:60]}")
     try:
         r = requests.get(url, headers=_HEADERS, timeout=8)
+        log.info(f"fetch_latest: HTTP {r.status_code} | body[:80]: {r.text[:80]!r}")
         if r.status_code == 200 and r.text.strip():
             lst = (r.json().get("data") or {}).get("list", [])
             if lst:
                 return lst[:n]
-        log.warning(f"fetch_latest: HTTP {r.status_code}")
+        log.warning(f"fetch_latest: bad response status={r.status_code}")
     except Exception as e:
         log.error(f"fetch_latest: {e}")
     return []
@@ -522,7 +525,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🎯 *WinGo Auto Bet Bot*\n"
         f"{'━'*26}\n"
         f"{exp_line}\n"
-        f"/cmd - List of Commands\n"
         f"Auto: {status}\n\n"
         f"Press *Start Auto* to begin.",
         parse_mode="Markdown",
@@ -798,8 +800,9 @@ def main():
     print("=" * 44)
     print("   WinGo Auto Bet Bot  v6.0")
     print("=" * 44)
-    print(f"  BOT_TOKEN : {'OK' if BOT_TOKEN else 'MISSING'}")
-    print(f"  MONGO_URI : {'OK' if MONGO_URI else 'MISSING'}")
+    print(f"  BOT_TOKEN  : {'OK' if BOT_TOKEN else 'MISSING'}")
+    print(f"  MONGO_URI  : {'OK' if MONGO_URI else 'MISSING'}")
+    print(f"  WORKER_URL : {WORKER_URL if WORKER_URL else '❌ NOT SET — direct fetch will be used'}")
     print("  Images:")
     _check_images()
     print("=" * 44)
