@@ -41,6 +41,29 @@ OWNER_NAME   = "𒆙ﺋ٨ـﺋ٨ـ𝂆𝃞𝂝𝄀𝂎𝂆𝄀 𝃞𝂖𝂝𝂎�
 
 # ── API ───────────────────────────────────────────────────────────────────────
 HISTORY_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
+# Proxy list — add/remove as needed (format: ip:port:user:pass)
+_PROXY_LIST = [
+    "31.59.20.176:6754:dknaqtqn:edt8dlwvmf4a",
+    "23.95.150.145:6114:dknaqtqn:edt8dlwvmf4a",
+    "198.23.239.134:6540:dknaqtqn:edt8dlwvmf4a",
+    "45.38.107.97:6014:dknaqtqn:edt8dlwvmf4a",
+    "107.172.163.27:6543:dknaqtqn:edt8dlwvmf4a",
+    "198.105.121.200:6462:dknaqtqn:edt8dlwvmf4a",
+    "64.137.96.74:6641:dknaqtqn:edt8dlwvmf4a",
+    "216.10.27.159:6837:dknaqtqn:edt8dlwvmf4a",
+    "142.111.67.146:5611:dknaqtqn:edt8dlwvmf4a",
+    "191.96.254.138:6185:dknaqtqn:edt8dlwvmf4a",
+]
+_proxy_index = 0   # current proxy index
+
+def _next_proxy() -> dict:
+    """Return next proxy in rotation as requests-compatible dict."""
+    global _proxy_index
+    raw  = _PROXY_LIST[_proxy_index % len(_PROXY_LIST)]
+    _proxy_index += 1
+    ip, port, user, pwd = raw.split(":")
+    url = f"http://{user}:{pwd}@{ip}:{port}"
+    return {"http": url, "https": url}
 
 HTTP_PORT = int(os.getenv("PORT", "8080"))
 
@@ -172,17 +195,25 @@ _HEADERS = {
 
 
 def fetch_latest(n: int = 10) -> list:
-    """Fetch latest results from the static JSON URL with ?ts= cache-buster."""
+    """Fetch with proxy rotation — tries each proxy until success."""
     ts = int(time.time() * 1000)
-    try:
-        r = requests.get(f"{HISTORY_URL}?ts={ts}", headers=_HEADERS, timeout=8)
-        if r.status_code == 200 and r.text.strip():
-            lst = (r.json().get("data") or {}).get("list", [])
-            if lst:
-                return lst[:n]
-        log.warning(f"fetch_latest: HTTP {r.status_code}")
-    except Exception as e:
-        log.error(f"fetch_latest: {e}")
+    for _ in range(len(_PROXY_LIST)):
+        proxies = _next_proxy()
+        try:
+            r = requests.get(
+                f"{HISTORY_URL}?ts={ts}",
+                headers=_HEADERS,
+                proxies=proxies,
+                timeout=8,
+            )
+            if r.status_code == 200 and r.text.strip():
+                lst = (r.json().get("data") or {}).get("list", [])
+                if lst:
+                    return lst[:n]
+            log.warning(f"fetch_latest: HTTP {r.status_code} (proxy {list(proxies.values())[0]})")
+        except Exception as e:
+            log.warning(f"fetch_latest: proxy failed — {e}")
+    log.error("fetch_latest: all proxies failed")
     return []
 
 
