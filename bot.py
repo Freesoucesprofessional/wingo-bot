@@ -522,6 +522,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🎯 *WinGo Auto Bet Bot*\n"
         f"{'━'*26}\n"
         f"{exp_line}\n"
+        f"/cmd - List of Commands\n"
         f"Auto: {status}\n\n"
         f"Press *Start Auto* to begin.",
         parse_mode="Markdown",
