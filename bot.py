@@ -36,9 +36,8 @@ ADMIN_IDS = {1793697840}
 # ── CHANNEL / OWNER LINKS ─────────────────────────────────────────────────────
 CHANNEL_URL  = "https://t.me/danger_boy_op1"
 OWNER_URL    = "https://t.me/danger_boy_op"
-CHANNEL_NAME = "𒆙ﺋ٨ـﺋ٨ـ𝂛𝃞𝂌𝂝 𝂆𝂁𝂀𝂝𝂝𝂎𝂛ﺋ٨ـﺋ٨ـ𒆙"
-OWNER_NAME   = "𒆙ﺋ٨ـﺋ٨ـ𝂆𝃞𝂝𝄀𝂎𝂆𝄀 𝃞𝂖𝂝𝂎𝂑ﺋ٨ـﺋ٨ـ𒆙"
-
+CHANNEL_NAME = "𒆜ﮩ٨ـﮩ٨ـ𝐉𝐎𝐈𝐍 𝐂𝐇𝐀𝐍𝐍𝐄𝐋ﮩ٨ـﮩ٨ـ𒆜"
+OWNER_NAME   = "𒆜ﮩ٨ـﮩ٨ـ𝐂𝐎𝐍𝐓𝐄𝐂𝐓 𝐎𝐖𝐍𝐄𝐑ﮩ٨ـﮩ٨ـ𒆜"
 # ── API ───────────────────────────────────────────────────────────────────────
 HISTORY_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
 # Cloudflare Worker URL — set via env var WORKER_URL
