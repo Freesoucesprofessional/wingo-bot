@@ -206,12 +206,29 @@ def _sign(params: dict) -> str:
 
 def fetch_latest(n: int = 15) -> list:
     """
-    Fetch latest results from the API endpoint with browser headers.
-    The static JSON_URL returns 403 on cloud IPs — we use the signed
-    API endpoint instead (same data, works from any IP with correct headers).
-    Retries 3 times before giving up.
+    Fetch latest results.
+    Strategy:
+      1. Try the fast static JSON URL (no auth, works from local/most IPs)
+      2. If that returns 403/empty (blocked on Render), fall back to the
+         signed API endpoint with browser headers — works from any IP.
+    Retries 3 times total before giving up.
     """
     for attempt in range(3):
+        # ── Try 1: fast static JSON (no auth needed, works on most servers) ──
+        try:
+            r = requests.get(JSON_URL, headers=_HEADERS, timeout=8)
+            if r.status_code == 200:
+                text = r.text.strip()
+                if text and text.startswith("{"):
+                    data = r.json()
+                    lst  = (data.get("data") or {}).get("list", [])
+                    if lst:
+                        log.debug(f"fetch_latest: JSON_URL OK ({len(lst)} records)")
+                        return lst[:n]
+        except Exception as e:
+            log.debug(f"fetch_latest JSON_URL attempt {attempt+1}: {e}")
+
+        # ── Try 2: signed API endpoint (works even when JSON_URL is blocked) ──
         try:
             params = {
                 "gameCode": GAME_CODE,
@@ -222,35 +239,25 @@ def fetch_latest(n: int = 15) -> list:
             }
             params["signature"] = _sign(params)
             params["timestamp"] = int(time.time())
-
             headers = dict(_HEADERS)
             if API_TOKEN:
                 headers["Authorization"] = f"Bearer {API_TOKEN}"
-
             r = requests.get(API_URL, params=params, headers=headers, timeout=10)
-
-            if r.status_code != 200:
-                log.warning(f"fetch_latest attempt {attempt+1}: HTTP {r.status_code}")
-                time.sleep(1)
-                continue
-
-            text = r.text.strip()
-            if not text:
-                log.warning(f"fetch_latest attempt {attempt+1}: empty response")
-                time.sleep(1)
-                continue
-
-            data = r.json()
-            lst  = (data.get("data") or {}).get("list", [])
-            if lst:
-                return lst[:n]
-
-            log.warning(f"fetch_latest attempt {attempt+1}: empty list, code={data.get('code')}")
+            if r.status_code == 200:
+                text = r.text.strip()
+                if text:
+                    data = r.json()
+                    lst  = (data.get("data") or {}).get("list", [])
+                    if lst:
+                        log.debug(f"fetch_latest: API_URL OK ({len(lst)} records)")
+                        return lst[:n]
+            log.warning(f"fetch_latest API attempt {attempt+1}: HTTP {r.status_code}")
         except Exception as e:
-            log.warning(f"fetch_latest attempt {attempt+1}: {e}")
+            log.warning(f"fetch_latest API attempt {attempt+1}: {e}")
+
         time.sleep(1)
 
-    log.error("fetch_latest: all 3 attempts failed")
+    log.error("fetch_latest: all attempts failed — both URLs unreachable")
     return []
 
 
